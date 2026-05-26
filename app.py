@@ -1,7 +1,6 @@
 import streamlit as st
 from collections import deque
 import pandas as pd
-import matplotlib.pyplot as plt
 from datetime import datetime
 import json
 import base64
@@ -27,7 +26,6 @@ class Member:
 
 # ---------------------------- Inisialisasi Session State (hanya sekali) ----------------------------
 def init_interactive():
-    """Inisialisasi state untuk mode interaktif (registrasi, belanja, visualisasi)."""
     if 'members' not in st.session_state:
         root = Member(1, "Perusahaan", sponsor_id=None, parent_id=None, is_active=True)
         st.session_state.members = {1: root}
@@ -375,11 +373,10 @@ def product_card(product, member_id):
                 st.balloons()
 
 # ==================================================================================
-# ============================ SIMULASI MASSAL (EFISIEN) ============================
+# ============================ SIMULASI MASSAL (EFISIEN, TANPA MATPLOTLIB) ==========
 # ==================================================================================
 
 def build_tree_fast(n_members):
-    """Bangun binary tree (placement) dan sponsor tree (sponsor = previous member)."""
     parent = [0] * (n_members + 1)
     left = [0] * (n_members + 1)
     right = [0] * (n_members + 1)
@@ -400,16 +397,13 @@ def build_tree_fast(n_members):
             left[node_id] = new_id
             parent[new_id] = node_id
         else:
-            # node penuh, masukkan kedua anak ke antrian, lalu ulang dengan new_id yang sama
             queue.append(right[node_id])
             queue.append(left[node_id])
-            queue.appendleft(node_id)  # kembalikan node penuh ke depan? Jangan, karena sudah penuh. Lebih baik: ambil node baru dari antrian lagi
-            new_id -= 1  # ulang dengan new_id yang sama
+            queue.appendleft(node_id)
+            new_id -= 1
             continue
-        # sponsor: member baru disponsori oleh member sebelumnya (ID-1)
         sponsor[new_id] = new_id - 1 if new_id - 1 >= 1 else 1
         queue.append(new_id)
-    # Pastikan semua member punya sponsor
     for i in range(2, n_members+1):
         if sponsor[i] == 0:
             sponsor[i] = 1
@@ -433,7 +427,6 @@ def run_mass_simulation(n_members, active_percent, avg_spend, margin,
     parent, left, right, sponsor = build_tree_fast(n_members)
     ancestors = precompute_ancestors(parent, max_level, n_members)
 
-    # Tentukan member aktif (belanja)
     n_active = int((n_members - 1) * active_percent / 100)
     all_members = list(range(2, n_members+1))
     if n_active > len(all_members):
@@ -442,7 +435,7 @@ def run_mass_simulation(n_members, active_percent, avg_spend, margin,
     is_active = [False] * (n_members + 1)
     for mid in active_members:
         is_active[mid] = True
-    is_active[1] = True  # root aktif sebagai ancestor
+    is_active[1] = True
 
     total_cash_in = n_active * avg_spend
 
@@ -458,9 +451,7 @@ def run_mass_simulation(n_members, active_percent, avg_spend, margin,
                 if komisi > 0:
                     matrix_received[anc_id] += komisi
                     level_commission[lvl] += komisi
-            # jika ancestor tidak aktif -> komisi hangus (breakage)
 
-    # Bonus sponsor berantai
     sponsor_bonus = [0] * (n_members + 1)
     for mid in range(1, n_members + 1):
         amount = matrix_received[mid]
@@ -512,7 +503,7 @@ def main():
     st.title("🛍️ K-BBPT Simulator + Analisis Massal")
     st.markdown("**Auto Cuan** (belanja ≥ Rp100.000) | **Auto Rich** (belanja bebas)")
 
-    init_interactive()   # memastikan session state terisi (hanya sekali)
+    init_interactive()
 
     with st.sidebar:
         st.header("🛠️ Manajemen")
@@ -658,7 +649,7 @@ def main():
 
     with tabs[4]:  # Simulasi Massal
         st.header("📈 Simulasi Massal - Analisis Profit & Visualisasi Matriks")
-        st.markdown("Atur asumsi di bawah, lalu jalankan simulasi. Grafik sensitivitas juga tersedia.")
+        st.markdown("Atur asumsi di bawah, lalu jalankan simulasi. Grafik sensitivitas juga tersedia (tanpa matplotlib).")
 
         with st.expander("⚙️ Parameter Simulasi", expanded=True):
             col1, col2 = st.columns(2)
@@ -699,12 +690,9 @@ def main():
                 '% dari Cash In': [hasil['level_commission'][l]/hasil['total_cash_in']*100 if hasil['total_cash_in']>0 else 0 for l in range(1, max_level+1)]
             })
             st.dataframe(df_level, use_container_width=True)
-            fig, ax = plt.subplots()
-            ax.bar(df_level['Level'], df_level['Total Komisi Diterima (Rp)'], color='skyblue')
-            ax.set_xlabel('Level Matrix')
-            ax.set_ylabel('Total Komisi (Rp)')
-            ax.set_title('Komisi per Level')
-            st.pyplot(fig)
+            # Bar chart menggunakan st.bar_chart (tanpa matplotlib)
+            st.subheader("Grafik Komisi per Level")
+            st.bar_chart(df_level.set_index('Level')['Total Komisi Diterima (Rp)'])
             st.metric("Breakage Matrix (Bonus tidak tersalurkan)", f"Rp{hasil['breakage_matrix']:,.0f}")
 
         st.markdown("---")
@@ -724,14 +712,8 @@ def main():
                     results = run_batch_simulation(n_range, active_percent, avg_spend, margin,
                                                    cuan_percent, sponsor_bonus_percent, max_level, random_seed)
                 profit_list = [r['profit'] for r in results]
-                fig, ax = plt.subplots(figsize=(10,5))
-                ax.plot(n_range, profit_list, marker='o', linestyle='-', color='green' if profit_list[-1]>0 else 'red')
-                ax.axhline(y=0, color='gray', linestyle='--')
-                ax.set_xlabel('Jumlah Member')
-                ax.set_ylabel('Profit Perusahaan (Rp)')
-                ax.set_title('Profit vs Jumlah Member')
-                ax.grid(True)
-                st.pyplot(fig)
+                df_plot = pd.DataFrame({'Jumlah Member': n_range, 'Profit (Rp)': profit_list})
+                st.line_chart(df_plot.set_index('Jumlah Member'))
                 st.caption(f"Parameter tetap: partisipasi={active_percent}%, margin={margin}%, belanja=Rp{avg_spend:,.0f}")
 
         with st.expander("Grafik Profit vs Persentase Partisipasi", expanded=False):
@@ -751,14 +733,8 @@ def main():
                         res = run_mass_simulation(n_members, p, avg_spend, margin,
                                                   cuan_percent, sponsor_bonus_percent, max_level, random_seed)
                         profits.append(res['profit'])
-                fig, ax = plt.subplots(figsize=(10,5))
-                ax.plot(part_range, profits, marker='s', linestyle='-', color='blue')
-                ax.axhline(y=0, color='gray', linestyle='--')
-                ax.set_xlabel('Persentase Partisipasi (%)')
-                ax.set_ylabel('Profit Perusahaan (Rp)')
-                ax.set_title(f'Profit vs Partisipasi (N={n_members})')
-                ax.grid(True)
-                st.pyplot(fig)
+                df_part = pd.DataFrame({'Partisipasi (%)': part_range, 'Profit (Rp)': profits})
+                st.line_chart(df_part.set_index('Partisipasi (%)'))
                 st.caption(f"Parameter tetap: N={n_members}, margin={margin}%, belanja=Rp{avg_spend:,.0f}")
 
 if __name__ == "__main__":

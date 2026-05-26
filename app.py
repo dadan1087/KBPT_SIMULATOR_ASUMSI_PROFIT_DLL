@@ -1,14 +1,16 @@
 import streamlit as st
 from collections import deque
 import pandas as pd
-import numpy as np
 from datetime import datetime
 import json
 import base64
 import random
+import time
 
-# ---------------------------- Data Model ----------------------------
+# ---------------------------- Data Model (Tetap digunakan untuk mode interaktif) ----------------------------
 class Member:
+    __slots__ = ('id','name','sponsor_id','parent_id','left_child_id','right_child_id','is_active',
+                 'balance_cuan','balance_rich','total_spent','total_commission_received')
     def __init__(self, id, name, sponsor_id, parent_id=None, is_active=False):
         self.id = id
         self.name = name
@@ -22,8 +24,9 @@ class Member:
         self.total_spent = 0
         self.total_commission_received = 0
 
-# ---------------------------- Algoritma Placement BFS (Prioritas Kanan) ----------------------------
-def find_placement_cuan(members):
+# ---------------------------- Algoritma Placement BFS (Prioritas Kanan) untuk mode interaktif ----------------------------
+def find_placement_cuan():
+    members = st.session_state.members
     queue = deque([1])
     while queue:
         node_id = queue.popleft()
@@ -36,18 +39,20 @@ def find_placement_cuan(members):
         queue.append(node.left_child_id)
     return None, None
 
-# ---------------------------- Fungsi untuk Mode Interaktif ----------------------------
 def register_member(sponsor_id, name):
     members = st.session_state.members
     if sponsor_id not in members:
         return None, f"Sponsor ID {sponsor_id} tidak ditemukan."
     if any(m.name.lower() == name.lower() for m in members.values()):
         return None, f"Nama '{name}' sudah terdaftar."
+
     new_id = st.session_state.next_id
     st.session_state.next_id += 1
-    parent_id, is_left = find_placement_cuan(members)
+
+    parent_id, is_left = find_placement_cuan()
     if parent_id is None:
         return None, "Tidak ada slot kosong di binary tree."
+
     new_member = Member(new_id, name, sponsor_id, parent_id, is_active=True)
     members[new_id] = new_member
     parent = members[parent_id]
@@ -55,11 +60,13 @@ def register_member(sponsor_id, name):
         parent.right_child_id = new_id
     else:
         parent.left_child_id = new_id
+
     side = "kanan" if not is_left else "kiri"
     info = (f"✅ Auto Cuan: anak {side} dari {parent.name} (ID:{parent.id})\n"
             f"✅ Auto Rich: sponsor langsung = {members[sponsor_id].name} (ID:{sponsor_id})")
     return new_member, info
 
+# ---------------------------- Fungsi Komisi (mode interaktif) ----------------------------
 def get_ancestors_cuan(member_id, members, max_level):
     ancestors = []
     cur = members[member_id].parent_id
@@ -103,6 +110,7 @@ def process_transaction_cuan(member_id, amount, apply_to_balance=False):
     if apply_to_balance:
         member.total_spent += amount
         st.session_state.total_cash_in += amount
+
     bonus_cuan = 0
     breakdown_cuan = []
     max_level = st.session_state.cuan_max_level
@@ -119,10 +127,12 @@ def process_transaction_cuan(member_id, amount, apply_to_balance=False):
                     st.session_state.total_bonus_cuan += komisi
                 bonus_cuan += komisi
                 breakdown_cuan.append((anc_id, anc.name, f"Matrix Level {lvl} ({percent*100:.0f}%)", komisi))
+
     sponsor_bonus_total = 0
     for anc_id, _, _, komisi in breakdown_cuan:
         if komisi > 0:
             sponsor_bonus_total += calculate_sponsor_bonus_chain(anc_id, komisi, members, st.session_state.sponsor_bonus_percent)
+
     return {
         'buyer_name': member.name,
         'buyer_id': member_id,
@@ -142,6 +152,7 @@ def process_transaction_rich(member_id, amount, apply_to_balance=False):
     if apply_to_balance:
         member.total_spent += amount
         st.session_state.total_cash_in += amount
+
     bonus_rich = 0
     breakdown_rich = []
     max_level = st.session_state.rich_max_level
@@ -167,6 +178,7 @@ def process_transaction_rich(member_id, amount, apply_to_balance=False):
         'breakdown_rich': breakdown_rich
     }
 
+# ---------------------------- Visualisasi (mode interaktif) ----------------------------
 def get_descendants_rich(root_id, members):
     result = []
     stack = [root_id]
@@ -244,10 +256,81 @@ def get_tree_text(root_id, members, level=0):
         lines.extend(get_tree_text(node.right_child_id, members, level+1))
     return lines
 
+# ---------------------------- Export/Import State (mode interaktif) ----------------------------
+def export_state():
+    state = {}
+    members_dict = {}
+    for mid, m in st.session_state.members.items():
+        members_dict[mid] = {
+            'id': m.id,
+            'name': m.name,
+            'sponsor_id': m.sponsor_id,
+            'parent_id': m.parent_id,
+            'left_child_id': m.left_child_id,
+            'right_child_id': m.right_child_id,
+            'is_active': m.is_active,
+            'balance_cuan': m.balance_cuan,
+            'balance_rich': m.balance_rich,
+            'total_spent': m.total_spent,
+            'total_commission_received': m.total_commission_received
+        }
+    state['members'] = members_dict
+    state['next_id'] = st.session_state.next_id
+    state['total_cash_in'] = st.session_state.total_cash_in
+    state['total_bonus_cuan'] = st.session_state.total_bonus_cuan
+    state['total_bonus_rich'] = st.session_state.total_bonus_rich
+    state['total_sponsor_bonus'] = st.session_state.total_sponsor_bonus
+    state['transactions'] = st.session_state.transactions
+    state['placement_queue'] = list(st.session_state.placement_queue)
+    state['selected_sponsor_id'] = st.session_state.selected_sponsor_id
+    state['reg_name'] = st.session_state.reg_name
+    state['cuan_percent'] = st.session_state.cuan_percent
+    state['rich_percent'] = st.session_state.rich_percent
+    state['cuan_max_level'] = st.session_state.cuan_max_level
+    state['rich_max_level'] = st.session_state.rich_max_level
+    state['sponsor_bonus_percent'] = st.session_state.sponsor_bonus_percent
+    state['min_spend_active'] = st.session_state.min_spend_active
+    return state
+
+def import_state(data):
+    members = {}
+    for mid, mdata in data['members'].items():
+        m = Member(
+            id=mdata['id'],
+            name=mdata['name'],
+            sponsor_id=mdata['sponsor_id'],
+            parent_id=mdata['parent_id'],
+            is_active=mdata['is_active']
+        )
+        m.left_child_id = mdata['left_child_id']
+        m.right_child_id = mdata['right_child_id']
+        m.balance_cuan = mdata['balance_cuan']
+        m.balance_rich = mdata['balance_rich']
+        m.total_spent = mdata['total_spent']
+        m.total_commission_received = mdata['total_commission_received']
+        members[int(mid)] = m
+    st.session_state.members = members
+    st.session_state.next_id = data['next_id']
+    st.session_state.total_cash_in = data['total_cash_in']
+    st.session_state.total_bonus_cuan = data['total_bonus_cuan']
+    st.session_state.total_bonus_rich = data['total_bonus_rich']
+    st.session_state.total_sponsor_bonus = data['total_sponsor_bonus']
+    st.session_state.transactions = data['transactions']
+    st.session_state.placement_queue = deque(data['placement_queue'])
+    st.session_state.selected_sponsor_id = data['selected_sponsor_id']
+    st.session_state.reg_name = data['reg_name']
+    st.session_state.cuan_percent = data['cuan_percent']
+    st.session_state.rich_percent = data['rich_percent']
+    st.session_state.cuan_max_level = data['cuan_max_level']
+    st.session_state.rich_max_level = data['rich_max_level']
+    st.session_state.sponsor_bonus_percent = data['sponsor_bonus_percent']
+    st.session_state.min_spend_active = data['min_spend_active']
+    st.rerun()
+
+# ---------------------------- Sample dan Reset (mode interaktif) ----------------------------
 def create_sample_network():
-    members = st.session_state.members
-    if len(members) > 1:
-        st.warning("Jaringan sudah memiliki member. Reset terlebih dahulu.")
+    if len(st.session_state.members) > 1:
+        st.warning("Reset aplikasi terlebih dahulu")
         return
     sample_data = [
         (1, "Member 1"), (1, "Member 2"),
@@ -271,6 +354,7 @@ def reset_app():
     st.session_state.total_bonus_rich = 0
     st.session_state.total_sponsor_bonus = 0
     st.session_state.transactions = []
+    st.session_state.placement_queue = deque([1])
     st.session_state.selected_sponsor_id = 1
     st.session_state.reg_name = ""
     st.session_state.cuan_percent = [0, 0.01, 0.01, 0.05, 0.03, 0.03, 0.02, 0.03, 0.07]
@@ -279,135 +363,9 @@ def reset_app():
     st.session_state.rich_max_level = 10
     st.session_state.sponsor_bonus_percent = 0.20
     st.session_state.min_spend_active = 100000
+    st.rerun()
 
-def init_session():
-    if 'members' not in st.session_state:
-        reset_app()
-
-# ---------------------------- Fungsi untuk Simulasi Massal ----------------------------
-def build_tree(N, active_percent=100, seed=42):
-    random.seed(seed)
-    np.random.seed(seed)
-    members = {1: Member(1, "Perusahaan", None, None, is_active=True)}
-    next_id = 2
-    for _ in range(1, N):
-        parent_id, is_left = find_placement_cuan(members)
-        new_id = next_id
-        next_id += 1
-        name = f"Member {new_id-1}"
-        sponsor_candidates = [mid for mid in members if mid != new_id]
-        sponsor_id = random.choice(sponsor_candidates) if sponsor_candidates else 1
-        new_member = Member(new_id, name, sponsor_id, parent_id, is_active=False)
-        members[new_id] = new_member
-        parent = members[parent_id]
-        if not is_left:
-            parent.right_child_id = new_id
-        else:
-            parent.left_child_id = new_id
-    # Tentukan status aktif
-    member_ids = list(members.keys())
-    members[1].is_active = True
-    n_active = int((N - 1) * active_percent / 100)
-    active_ids = random.sample([mid for mid in member_ids if mid != 1], n_active)
-    for mid in active_ids:
-        members[mid].is_active = True
-    return members, active_ids
-
-def compute_cuan_commissions(members, active_ids, cuan_percent, max_level, sponsor_bonus_percent, avg_spend=100000):
-    total_cash_in = 0
-    total_matrix_commission = 0
-    total_sponsor_bonus = 0
-    for m in members.values():
-        m.balance_cuan = 0
-        m.total_commission_received = 0
-    for mid in active_ids:
-        amount = avg_spend
-        total_cash_in += amount
-        ancestors = []
-        cur = members[mid].parent_id
-        level = 1
-        while cur and level <= max_level:
-            ancestors.append((cur, level))
-            cur = members[cur].parent_id
-            level += 1
-        for anc_id, lvl in ancestors:
-            anc = members[anc_id]
-            if anc.is_active:
-                percent = cuan_percent[lvl] if lvl < len(cuan_percent) else 0
-                komisi = int(amount * percent)
-                if komisi > 0:
-                    anc.balance_cuan += komisi
-                    anc.total_commission_received += komisi
-                    total_matrix_commission += komisi
-    # Bonus sponsor berantai
-    additional_bonus = {mid: 0 for mid in members}
-    changed = True
-    while changed:
-        changed = False
-        for mid in list(members.keys()):
-            node = members[mid]
-            if node.sponsor_id is None:
-                continue
-            total_received = node.balance_cuan + additional_bonus.get(mid, 0)
-            bonus = int(total_received * sponsor_bonus_percent)
-            if bonus > 0:
-                key = node.sponsor_id
-                if additional_bonus.get(key, 0) != additional_bonus.get(key, 0) + bonus:
-                    additional_bonus[key] = additional_bonus.get(key, 0) + bonus
-                    changed = True
-    total_sponsor_bonus = sum(additional_bonus.values())
-    total_bonus = total_matrix_commission + total_sponsor_bonus
-    return total_cash_in, total_matrix_commission, total_sponsor_bonus, total_bonus
-
-def compute_rich_commissions(members, active_ids, rich_percent, max_level, avg_spend=50000):
-    total_cash_in = 0
-    total_rich_commission = 0
-    for m in members.values():
-        m.balance_rich = 0
-    for mid in active_ids:
-        amount = avg_spend
-        total_cash_in += amount
-        cur = members[mid].sponsor_id
-        level = 1
-        while cur and level <= max_level:
-            anc = members[cur]
-            percent = rich_percent[level] if level < len(rich_percent) else 0
-            komisi = int(amount * percent)
-            if komisi > 0:
-                anc.balance_rich += komisi
-                total_rich_commission += komisi
-            cur = anc.sponsor_id
-            level += 1
-    return total_cash_in, total_rich_commission
-
-def run_mass_simulation(N, active_percent, avg_spend_cuan, avg_spend_rich, margin_percent,
-                        cuan_percent, rich_percent, cuan_max_level, rich_max_level, sponsor_bonus_percent):
-    members, active_ids = build_tree(N, active_percent, seed=42)
-    cash_in_cuan, matrix_comm, sponsor_bonus, total_cuan_bonus = compute_cuan_commissions(
-        members, active_ids, cuan_percent, cuan_max_level, sponsor_bonus_percent, avg_spend_cuan
-    )
-    cash_in_rich, rich_comm = compute_rich_commissions(members, active_ids, rich_percent, rich_max_level, avg_spend_rich)
-    total_cash_in = cash_in_cuan + cash_in_rich
-    total_bonus = total_cuan_bonus + rich_comm
-    laba_produk = total_cash_in * (margin_percent / 100)
-    profit = laba_produk - total_bonus
-    return {
-        'N': N,
-        'active_count': len(active_ids),
-        'active_percent': active_percent,
-        'cash_in_cuan': cash_in_cuan,
-        'cash_in_rich': cash_in_rich,
-        'total_cash_in': total_cash_in,
-        'matrix_commission': matrix_comm,
-        'sponsor_bonus': sponsor_bonus,
-        'rich_commission': rich_comm,
-        'total_bonus': total_bonus,
-        'laba_produk': laba_produk,
-        'profit': profit,
-        'status': 'AMAN' if profit > 0 else ('RUGI' if profit < 0 else 'IMPAS')
-    }
-
-# ---------------------------- UI Produk Card ----------------------------
+# ---------------------------- Produk Card (mode interaktif) ----------------------------
 def product_card(product, member_id):
     col1, col2, col3 = st.columns([1, 3, 1])
     with col1:
@@ -447,47 +405,217 @@ def product_card(product, member_id):
                 st.dataframe(pd.DataFrame(tx_detail), use_container_width=True)
                 st.balloons()
 
-# ---------------------------- Main ----------------------------
+# ==================================================================================
+# ============================ SIMULASI MASSAL (EFISIEN) ============================
+# ==================================================================================
+
+def build_tree_fast(n_members):
+    """
+    Membangun binary tree dengan N member (root ID=1 sudah termasuk).
+    Mengembalikan:
+        parent: list of int, index=member_id, parent[1]=0 (tidak punya parent)
+        left: list of int, left child id
+        right: list of int, right child id
+        sponsor: list of int, sponsor_id (untuk Auto Rich) - di sini diisi dengan random atau bisa 0.
+            Untuk simulasi massal, sponsor tree tidak terlalu penting karena kita fokus ke Auto Cuan.
+            Namun untuk bonus sponsor, kita perlu sponsor tree. Kita akan buat sponsor tree sederhana:
+            setiap member baru disponsori oleh member dengan ID random atau member sebelumnya.
+            Tapi karena kita hanya butuh perhitungan profit agregat, kita bisa asumsikan sponsor tree
+            sama dengan placement tree? Tidak, karena dokumen menyatakan independen. Untuk menyederhanakan,
+            kita asumsikan semua member disponsori oleh root (Perusahaan) -> maka bonus sponsor hanya
+            mengalir ke root. Ini akan memberi estimasi profit terburuk (bonus besar). Atau kita buat
+            sponsor tree sesuai urutan pendaftaran: member i disponsori oleh member i-1? Ini lebih realistis.
+        Kita akan buat sponsor tree: member ke-2 disponsori root, member ke-3 disponsori member ke-2, dst.
+        Namun untuk konsistensi, kita gunakan aturan: setiap member baru disponsori oleh member sebelumnya
+        (kecuali root). Ini mirip dengan sample data.
+    """
+    parent = [0] * (n_members + 1)
+    left = [0] * (n_members + 1)
+    right = [0] * (n_members + 1)
+    sponsor = [0] * (n_members + 1)   # sponsor untuk Auto Rich
+    # root
+    parent[1] = 0
+    sponsor[1] = 0
+    # queue untuk BFS placement
+    queue = deque([1])
+    next_id = 2
+    # Urutan sponsor: member baru disponsori oleh member sebelumnya (ID-1) kecuali root
+    # Ini untuk menyederhanakan, namun hasilnya masih cukup representatif.
+    for new_id in range(2, n_members + 1):
+        # Ambil node dari queue untuk placement
+        if not queue:
+            break
+        node_id = queue.popleft()
+        # Prioritas kanan
+        if right[node_id] == 0:
+            right[node_id] = new_id
+            parent[new_id] = node_id
+            # setelah diisi kanan, jika kiri masih kosong, node dikembalikan ke queue
+            if left[node_id] == 0:
+                queue.append(node_id)
+        elif left[node_id] == 0:
+            left[node_id] = new_id
+            parent[new_id] = node_id
+            # node menjadi penuh, tidak dikembalikan
+        else:
+            # seharusnya tidak terjadi karena node penuh tidak ada di queue
+            # fallback: masukkan anak kanan dan kiri ke queue, lalu ulang
+            queue.append(right[node_id])
+            queue.append(left[node_id])
+            # kita panggil rekursif sederhana dengan mengurangi new_id? Tidak efisien.
+            # Untuk aman, kita bisa set new_id kembali dan loop lagi, tapi lebih mudah: kita ulangi proses dengan memasukkan node penuh ke queue?
+            # Karena ini hanya simulasi, kita akan tempatkan di awal queue lagi dan ambil node berikutnya
+            queue.appendleft(node_id)
+            new_id -= 1
+            continue
+        # Sponsor: member baru disponsori oleh member sebelumnya (ID-1), jika ada; jika tidak, root
+        if new_id - 1 >= 1:
+            sponsor[new_id] = new_id - 1
+        else:
+            sponsor[new_id] = 1
+        # Node baru memiliki dua slot kosong, tambahkan ke queue
+        queue.append(new_id)
+    # Pastikan semua member punya sponsor minimal root
+    for i in range(2, n_members+1):
+        if sponsor[i] == 0:
+            sponsor[i] = 1
+    return parent, left, right, sponsor
+
+def precompute_ancestors(parent, max_level, n_members):
+    """
+    Untuk setiap member (1..n_members), precompute daftar ancestor hingga max_level.
+    Mengembalikan list of list, ancestors[member_id] = list of (ancestor_id, level)
+    """
+    ancestors = [[] for _ in range(n_members + 1)]
+    for mid in range(1, n_members + 1):
+        cur = parent[mid]
+        level = 1
+        while cur and level <= max_level:
+            ancestors[mid].append((cur, level))
+            cur = parent[cur]
+            level += 1
+    return ancestors
+
+def run_mass_simulation(n_members, active_percent, avg_spend, margin,
+                        cuan_percent, sponsor_bonus_percent, max_level,
+                        random_seed=42):
+    """
+    Melakukan simulasi massal dengan N member.
+    Mengembalikan dictionary hasil.
+    """
+    random.seed(random_seed)
+    start_time = time.time()
+
+    # 1. Bangun pohon
+    parent, left, right, sponsor = build_tree_fast(n_members)
+    # 2. Precompute ancestors untuk semua member
+    ancestors = precompute_ancestors(parent, max_level, n_members)
+
+    # 3. Tentukan member yang aktif (belanja)
+    n_active = int(n_members * active_percent / 100)
+    active_members = random.sample(range(2, n_members+1), n_active)  # exclude root? root tidak belanja sebagai member? root bisa dianggap tidak aktif belanja.
+    # Root (ID=1) bisa saja tidak belanja. Kita exclude root dari aktivitas belanja.
+    is_active = [False] * (n_members + 1)
+    for mid in active_members:
+        is_active[mid] = True
+    # Root tetap aktif (sebagai ancestor) tapi tidak belanja
+    is_active[1] = True
+
+    total_cash_in = n_active * avg_spend
+
+    # 4. Hitung komisi matrix
+    # matrix_commission_received[mid] = total komisi matrix yang diterima member mid
+    matrix_commission_received = [0] * (n_members + 1)
+
+    for buyer_id in active_members:
+        amount = avg_spend
+        # naik ke ancestor
+        for anc_id, level in ancestors[buyer_id]:
+            if is_active[anc_id]:
+                percent = cuan_percent[level] if level < len(cuan_percent) else 0
+                komisi = int(amount * percent)
+                if komisi > 0:
+                    matrix_commission_received[anc_id] += komisi
+            # jika ancestor tidak aktif, komisi hangus (tidak diterima siapa pun) -> breakage
+            # tidak ada yang ditambahkan
+
+    # 5. Hitung bonus sponsor berantai
+    # Bonus sponsor: setiap member yang menerima komisi matrix, sponsornya mendapat sponsor_bonus_percent dari komisi tersebut,
+    # lalu sponsor dari sponsor juga mendapat dari bonus tersebut, dst.
+    # Kita iterasi semua member, untuk setiap komisi yang diterima, kita naikkan rantai sponsor.
+    sponsor_bonus_received = [0] * (n_members + 1)
+    for mid in range(1, n_members + 1):
+        amount = matrix_commission_received[mid]
+        if amount == 0:
+            continue
+        current = mid
+        chain_amount = amount
+        while True:
+            sp_id = sponsor[current]
+            if sp_id == 0:
+                break
+            bonus = int(chain_amount * sponsor_bonus_percent)
+            if bonus > 0:
+                sponsor_bonus_received[sp_id] += bonus
+                chain_amount = bonus   # lanjutkan ke sponsor berikutnya dengan bonus yang diterima
+                current = sp_id
+            else:
+                break
+
+    total_matrix_bonus = sum(matrix_commission_received)
+    total_sponsor_bonus = sum(sponsor_bonus_received)
+    total_bonus = total_matrix_bonus + total_sponsor_bonus
+
+    # 6. Hitung profit perusahaan
+    laba_produk = total_cash_in * (margin / 100.0)
+    profit = laba_produk - total_bonus
+
+    # Hitung breakage teoritis: total komisi maksimal jika semua ancestor aktif dan semua level terisi penuh
+    # Untuk setiap transaksi, komisi maksimal = amount * sum(cuan_percent[1..max_level])
+    max_komisi_per_transaksi = sum(cuan_percent[1:max_level+1])
+    max_total_komisi = total_cash_in * max_komisi_per_transaksi
+    # Bonus sponsor maksimal? tidak dihitung sederhana, breakage kita hitung dari selisih antara maks komisi matrix dan real komisi matrix + bonus sponsor.
+    # Namun lebih mudah: breakage matrix = max_total_komisi - total_matrix_bonus (karena bonus sponsor tidak memiliki batas atas teoritis)
+    breakage_matrix = max_total_komisi - total_matrix_bonus
+
+    elapsed = time.time() - start_time
+
+    return {
+        'n_members': n_members,
+        'n_active': n_active,
+        'total_cash_in': total_cash_in,
+        'total_matrix_bonus': total_matrix_bonus,
+        'total_sponsor_bonus': total_sponsor_bonus,
+        'total_bonus': total_bonus,
+        'laba_produk': laba_produk,
+        'profit': profit,
+        'breakage_matrix': breakage_matrix,
+        'elapsed_time': elapsed,
+        'status': 'AMAN' if profit > 0 else ('RUGI' if profit < 0 else 'IMPAS')
+    }
+
+# ---------------------------- Main App ----------------------------
 def main():
     st.set_page_config(page_title="K-BBPT Simulator", layout="wide")
-    st.title("🛍️ K-BBPT Simulator - Belanja & Komisi")
-    st.markdown("**Auto Cuan** (belanja ≥ Rp100.000 untuk status aktif) | **Auto Rich** (belanja bebas)")
+    st.title("🛍️ K-BBPT Simulator + Analisis Massal")
+    st.markdown("**Auto Cuan** (belanja ≥ Rp100.000) | **Auto Rich** (belanja bebas)")
 
-    init_session()
+    if 'members' not in st.session_state:
+        reset_app()
 
+    # Sidebar umum
     with st.sidebar:
         st.header("🛠️ Manajemen")
         if st.button("🌳 Sample Jaringan 10 Member", use_container_width=True):
             create_sample_network()
         if st.button("🗑️ Reset Aplikasi", use_container_width=True):
             reset_app()
-            st.rerun()
         st.markdown("---")
         st.header("💾 Backup & Restore")
         col1, col2 = st.columns(2)
         with col1:
             if st.button("💾 Simpan JSON", use_container_width=True):
-                state = {
-                    'members': {mid: {'id': m.id, 'name': m.name, 'sponsor_id': m.sponsor_id, 'parent_id': m.parent_id,
-                                      'left_child_id': m.left_child_id, 'right_child_id': m.right_child_id,
-                                      'is_active': m.is_active, 'balance_cuan': m.balance_cuan, 'balance_rich': m.balance_rich,
-                                      'total_spent': m.total_spent, 'total_commission_received': m.total_commission_received}
-                                for mid, m in st.session_state.members.items()},
-                    'next_id': st.session_state.next_id,
-                    'total_cash_in': st.session_state.total_cash_in,
-                    'total_bonus_cuan': st.session_state.total_bonus_cuan,
-                    'total_bonus_rich': st.session_state.total_bonus_rich,
-                    'total_sponsor_bonus': st.session_state.total_sponsor_bonus,
-                    'transactions': st.session_state.transactions,
-                    'selected_sponsor_id': st.session_state.selected_sponsor_id,
-                    'reg_name': st.session_state.reg_name,
-                    'cuan_percent': st.session_state.cuan_percent,
-                    'rich_percent': st.session_state.rich_percent,
-                    'cuan_max_level': st.session_state.cuan_max_level,
-                    'rich_max_level': st.session_state.rich_max_level,
-                    'sponsor_bonus_percent': st.session_state.sponsor_bonus_percent,
-                    'min_spend_active': st.session_state.min_spend_active
-                }
+                state = export_state()
                 json_str = json.dumps(state, indent=2, default=str)
                 b64 = base64.b64encode(json_str.encode()).decode()
                 href = f'<a href="data:application/json;base64,{b64}" download="kbppt_state.json">Download JSON</a>'
@@ -496,246 +624,200 @@ def main():
             uploaded = st.file_uploader("Muat JSON", type=["json"], key="upload", label_visibility="collapsed")
             if uploaded:
                 try:
-                    data = json.load(uploaded)
-                    members = {}
-                    for mid, mdata in data['members'].items():
-                        m = Member(mdata['id'], mdata['name'], mdata['sponsor_id'], mdata['parent_id'], mdata['is_active'])
-                        m.left_child_id = mdata['left_child_id']
-                        m.right_child_id = mdata['right_child_id']
-                        m.balance_cuan = mdata['balance_cuan']
-                        m.balance_rich = mdata['balance_rich']
-                        m.total_spent = mdata['total_spent']
-                        m.total_commission_received = mdata['total_commission_received']
-                        members[int(mid)] = m
-                    st.session_state.members = members
-                    st.session_state.next_id = data['next_id']
-                    st.session_state.total_cash_in = data['total_cash_in']
-                    st.session_state.total_bonus_cuan = data['total_bonus_cuan']
-                    st.session_state.total_bonus_rich = data['total_bonus_rich']
-                    st.session_state.total_sponsor_bonus = data['total_sponsor_bonus']
-                    st.session_state.transactions = data['transactions']
-                    st.session_state.selected_sponsor_id = data['selected_sponsor_id']
-                    st.session_state.reg_name = data['reg_name']
-                    st.session_state.cuan_percent = data['cuan_percent']
-                    st.session_state.rich_percent = data['rich_percent']
-                    st.session_state.cuan_max_level = data['cuan_max_level']
-                    st.session_state.rich_max_level = data['rich_max_level']
-                    st.session_state.sponsor_bonus_percent = data['sponsor_bonus_percent']
-                    st.session_state.min_spend_active = data['min_spend_active']
+                    import_state(json.load(uploaded))
                     st.success("Data dimuat!")
                     st.rerun()
                 except Exception as e:
-                    st.error(f"Gagal memuat: {e}")
+                    st.error(f"Gagal: {e}")
         st.markdown("---")
-        st.header("⚙️ Pengaturan Komisi (Auto Cuan)")
-        st.session_state.min_spend_active = st.number_input("Minimal belanja untuk status aktif", min_value=0, value=100000, step=10000)
-        st.session_state.sponsor_bonus_percent = st.number_input("Bonus sponsor (%)", min_value=0.0, max_value=1.0, value=0.20, step=0.01, format="%.2f")
-        st.write("Persentase komisi matrix per level (1-8):")
+        st.header("⚙️ Pengaturan Komisi (Global)")
+        st.session_state.min_spend_active = st.number_input("Min belanja aktif", 0, 100000, 100000)
+        st.session_state.sponsor_bonus_percent = st.slider("Bonus sponsor (%)", 0, 100, 20)/100.0
+        st.write("Auto Cuan (% per level 1-8):")
         cols = st.columns(4)
-        for i in range(1, 9):
-            col = cols[(i-1)%4]
+        for i in range(1,9):
             default = [0,1,1,5,3,3,2,3,7][i]
-            val = col.number_input(f"Level {i} (%)", min_value=0, max_value=100, value=default, step=1, key=f"cuan_lvl_{i}")
-            st.session_state.cuan_percent[i] = val / 100.0
-        st.header("⚙️ Pengaturan Komisi (Auto Rich)")
-        st.write("Persentase komisi per level (1-10):")
+            val = cols[(i-1)%4].number_input(f"L{i}", 0, 100, default, key=f"cuan_{i}")
+            st.session_state.cuan_percent[i] = val/100.0
+        st.write("Auto Rich (% per level 1-10):")
         cols2 = st.columns(5)
-        defaults_rich = [0,5,5,4,4,2,1,1,1,1,1]
-        for i in range(1, 11):
-            col = cols2[(i-1)%5]
-            val = col.number_input(f"L{i} (%)", min_value=0, max_value=100, value=defaults_rich[i], step=1, key=f"rich_lvl_{i}")
-            st.session_state.rich_percent[i] = val / 100.0
-        st.markdown("---")
-        st.header("📊 Ringkasan Cepat")
-        total_member = len(st.session_state.members)
-        total_cash_in = st.session_state.total_cash_in
-        total_bonus = st.session_state.total_bonus_cuan + st.session_state.total_bonus_rich + st.session_state.total_sponsor_bonus
-        nett = total_cash_in - total_bonus
-        st.metric("Total Member", total_member)
-        st.metric("Cash In", f"Rp{total_cash_in:,.0f}")
-        st.metric("Total Bonus", f"Rp{total_bonus:,.0f}")
-        st.metric("Nett Perusahaan", f"Rp{nett:,.0f}")
+        default_rich = [0,5,5,4,4,2,1,1,1,1,1]
+        for i in range(1,11):
+            val = cols2[(i-1)%5].number_input(f"R{i}", 0, 100, default_rich[i], key=f"rich_{i}")
+            st.session_state.rich_percent[i] = val/100.0
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🏪 Belanja Produk", "📊 Dashboard", "📝 Registrasi", "🌳 Visualisasi", "📈 Simulasi Massal"])
+    # Tabs
+    tab_belanja, tab_dashboard, tab_reg, tab_viz, tab_massal = st.tabs(
+        ["🏪 Belanja", "📊 Dashboard", "📝 Registrasi", "🌳 Visualisasi", "📈 Simulasi Massal"]
+    )
 
-    with tab1:
-        st.header("🛒 Toko Produk K-BBPT")
-        member_options = {m.id: f"{m.name} (ID:{m.id})" for m in st.session_state.members.values()}
-        if not member_options:
-            st.warning("Belum ada member. Silakan registrasi.")
+    with tab_belanja:
+        st.header("🛒 Toko Produk")
+        member_opts = {m.id: f"{m.name} (ID:{m.id})" for m in st.session_state.members.values()}
+        if not member_opts:
+            st.warning("Belum ada member")
             buyer_id = None
         else:
-            buyer_id = st.selectbox("👤 Member yang berbelanja", options=list(member_options.keys()), format_func=lambda x: member_options[x])
-        filter_type = st.radio("Tampilkan produk:", ["Semua", "Auto Cuan (wajib)", "Auto Rich (bebas)"], horizontal=True)
+            buyer_id = st.selectbox("Member belanja", options=list(member_opts.keys()), format_func=lambda x: member_opts[x])
+        filter_type = st.radio("Filter produk", ["Semua", "Auto Cuan", "Auto Rich"], horizontal=True)
         products = [
-            {"id": 1, "name": "Paket Keanggotaan Bulanan", "desc": "Wajib Auto Cuan - Minimal Rp100.000", "price": 100000, "type": "cuan"},
-            {"id": 2, "name": "Paket Keanggotaan Bulanan+", "desc": "Auto Cuan - Stok produk", "price": 200000, "type": "cuan"},
-            {"id": 3, "name": "Suplemen Kesehatan", "desc": "Auto Rich - Harga reseller", "price": 50000, "type": "rich"},
-            {"id": 4, "name": "Vitamin C 1000mg", "desc": "Auto Rich - Bisa dijual", "price": 25000, "type": "rich"},
-            {"id": 5, "name": "Paket Herbal (3 botol)", "desc": "Auto Rich - Diskon", "price": 120000, "type": "rich"},
-            {"id": 6, "name": "Alat Kesehatan Digital", "desc": "Auto Rich - Grosir", "price": 350000, "type": "rich"},
+            {"id":1,"name":"Paket Bulanan","desc":"Auto Cuan","price":100000,"type":"cuan"},
+            {"id":2,"name":"Paket Bulanan+","desc":"Auto Cuan","price":200000,"type":"cuan"},
+            {"id":3,"name":"Suplemen","desc":"Auto Rich","price":50000,"type":"rich"},
+            {"id":4,"name":"Vitamin C","desc":"Auto Rich","price":25000,"type":"rich"},
+            {"id":5,"name":"Paket Herbal","desc":"Auto Rich","price":120000,"type":"rich"},
+            {"id":6,"name":"Alat Kesehatan","desc":"Auto Rich","price":350000,"type":"rich"},
         ]
-        filtered = [p for p in products if filter_type == "Semua" or (filter_type == "Auto Cuan (wajib)" and p['type']=='cuan') or (filter_type == "Auto Rich (bebas)" and p['type']=='rich')]
+        filtered = [p for p in products if filter_type=="Semua" or (filter_type=="Auto Cuan" and p['type']=='cuan') or (filter_type=="Auto Rich" and p['type']=='rich')]
         if buyer_id:
             cols = st.columns(2)
             for i, prod in enumerate(filtered):
-                with cols[i % 2]:
+                with cols[i%2]:
                     product_card(prod, buyer_id)
-        else:
-            st.info("Silakan registrasi member dulu.")
 
-    with tab2:
-        st.header("📊 Dashboard Lengkap")
+    with tab_dashboard:
+        st.header("Dashboard Interaktif")
         col1, col2, col3 = st.columns(3)
         total_member = len(st.session_state.members)
-        active_member = sum(1 for m in st.session_state.members.values() if m.is_active)
+        active = sum(1 for m in st.session_state.members.values() if m.is_active)
         col1.metric("Total Member", total_member)
-        col2.metric("Member Aktif (Auto Cuan)", active_member)
-        col3.metric("Total Cash In", f"Rp{st.session_state.total_cash_in:,.0f}")
+        col2.metric("Aktif", active)
+        col3.metric("Cash In", f"Rp{st.session_state.total_cash_in:,.0f}")
         col4, col5, col6 = st.columns(3)
-        col4.metric("Komisi Auto Cuan (Matrix)", f"Rp{st.session_state.total_bonus_cuan:,.0f}")
-        col5.metric("Bonus Sponsor Auto Cuan", f"Rp{st.session_state.total_sponsor_bonus:,.0f}")
-        col6.metric("Komisi Auto Rich", f"Rp{st.session_state.total_bonus_rich:,.0f}")
-        nett = st.session_state.total_cash_in - (st.session_state.total_bonus_cuan + st.session_state.total_bonus_rich + st.session_state.total_sponsor_bonus)
-        st.metric("Nett Perusahaan", f"Rp{nett:,.0f}")
-
-        st.subheader("📜 Riwayat Transaksi & Komisi")
+        col4.metric("Komisi Cuan", f"Rp{st.session_state.total_bonus_cuan:,.0f}")
+        col5.metric("Bonus Sponsor", f"Rp{st.session_state.total_sponsor_bonus:,.0f}")
+        col6.metric("Komisi Rich", f"Rp{st.session_state.total_bonus_rich:,.0f}")
+        st.subheader("Riwayat Transaksi")
         if st.session_state.transactions:
             for tx in reversed(st.session_state.transactions[-20:]):
-                with st.expander(f"{tx['timestamp']} - {tx['pembeli']} belanja Rp{tx['nominal']:,} ({tx['jenis']}) - Total Komisi: Rp{tx['total_komisi']:,}"):
-                    df_tx = pd.DataFrame(tx['detail_komisi'])
-                    st.dataframe(df_tx, use_container_width=True)
-        else:
-            st.info("Belum ada transaksi.")
+                with st.expander(f"{tx['timestamp']} - {tx['pembeli']} belanja Rp{tx['nominal']:,} - Total komisi Rp{tx['total_komisi']:,}"):
+                    st.dataframe(pd.DataFrame(tx['detail_komisi']))
+        st.subheader("Daftar Member")
+        df = pd.DataFrame([{
+            "ID": m.id, "Nama": m.name, "Sponsor": m.sponsor_id,
+            "Parent Cuan": m.parent_id, "Status": "✅" if m.is_active else "❌",
+            "Komisi Cuan": m.balance_cuan, "Komisi Rich": m.balance_rich
+        } for m in st.session_state.members.values()])
+        st.dataframe(df)
 
-        st.subheader("📋 Daftar Member")
-        df_data = []
-        for m in st.session_state.members.values():
-            df_data.append({
-                "ID": m.id, "Nama": m.name, "Sponsor (Auto Rich)": m.sponsor_id,
-                "Parent Cuan": m.parent_id, "Status Aktif": "✅" if m.is_active else "❌",
-                "Komisi Cuan": m.balance_cuan, "Komisi Rich": m.balance_rich,
-                "Total Belanja": m.total_spent
-            })
-        st.dataframe(pd.DataFrame(df_data), use_container_width=True)
-
-    with tab3:
-        st.header("📝 Registrasi Member Baru")
-        new_name = st.text_input("Nama Lengkap", value=st.session_state.reg_name)
-        st.session_state.reg_name = new_name
+    with tab_reg:
+        st.header("Registrasi Member Baru")
+        name = st.text_input("Nama Lengkap", value=st.session_state.reg_name)
+        st.session_state.reg_name = name
         sponsor_list = [(m.id, f"{m.name} (ID:{m.id})") for m in st.session_state.members.values()]
-        current_index = 0
-        for i, (sid, _) in enumerate(sponsor_list):
+        idx = 0
+        for i, (sid,_) in enumerate(sponsor_list):
             if sid == st.session_state.selected_sponsor_id:
-                current_index = i
+                idx = i
                 break
-        selected_sponsor = st.selectbox("Pilih Sponsor (Auto Rich)", options=sponsor_list, format_func=lambda x: x[1], index=current_index)
-        st.session_state.selected_sponsor_id = selected_sponsor[0]
-        if st.button("Daftarkan"):
-            if not new_name.strip():
-                st.error("Nama tidak boleh kosong")
+        sponsor = st.selectbox("Pilih Sponsor", options=sponsor_list, format_func=lambda x: x[1], index=idx)
+        st.session_state.selected_sponsor_id = sponsor[0]
+        if st.button("Daftar"):
+            if not name.strip():
+                st.error("Nama kosong")
             else:
-                new_member, info = register_member(st.session_state.selected_sponsor_id, new_name.strip())
-                if new_member:
-                    st.success(f"🎉 Member {new_member.name} (ID:{new_member.id}) berhasil!")
-                    st.info(info)
+                new, msg = register_member(sponsor[0], name.strip())
+                if new:
+                    st.success(msg)
                     st.session_state.reg_name = ""
                     st.session_state.selected_sponsor_id = 1
                     st.rerun()
                 else:
-                    st.error(info)
+                    st.error(msg)
 
-    with tab4:
-        st.header("🌳 Visualisasi Jaringan")
-        net_type = st.radio("Pilih jenis jaringan", ["Auto Cuan (Binary / Placement)", "Auto Rich (Sponsor Tree)"])
-        root_options = {m.id: f"{m.name} (ID:{m.id})" for m in st.session_state.members.values()}
-        root_id = st.selectbox("Root / Member awal", options=list(root_options.keys()), format_func=lambda x: root_options[x])
-        search_term = st.text_input("🔍 Cari member (nama atau ID)", placeholder="Contoh: Member 1 atau ID 5")
+    with tab_viz:
+        st.header("Visualisasi Jaringan")
+        net_type = st.radio("Jenis jaringan", ["Auto Cuan (Binary)", "Auto Rich (Sponsor Tree)"])
+        root = st.selectbox("Root", options=[m.id for m in st.session_state.members.values()], format_func=lambda x: st.session_state.members[x].name)
+        search = st.text_input("Cari member")
         search_id = None
-        if search_term:
-            search_term_lower = search_term.lower()
+        if search:
             for m in st.session_state.members.values():
-                if search_term_lower == m.name.lower() or search_term == str(m.id):
+                if search.lower() == m.name.lower() or search == str(m.id):
                     search_id = m.id
                     break
-            if search_id is None:
-                st.warning("Member tidak ditemukan.")
-        if net_type == "Auto Cuan (Binary / Placement)":
-            dot = get_member_tree_cuan(root_id, st.session_state.members, search_id)
+            if not search_id:
+                st.warning("Tidak ditemukan")
+        if net_type == "Auto Cuan (Binary)":
+            dot = get_member_tree_cuan(root, st.session_state.members, search_id)
         else:
-            dot = get_member_tree_rich(root_id, st.session_state.members, search_id)
+            dot = get_member_tree_rich(root, st.session_state.members, search_id)
         if dot:
-            st.graphviz_chart(dot, use_container_width=True)
-            st.caption("💡 Tips: Gunakan Ctrl + Scroll untuk zoom. Klik kanan pada gambar untuk menyimpan.")
+            st.graphviz_chart(dot)
         else:
-            st.warning("Pohon kosong atau root tidak ditemukan.")
-        st.subheader("Struktur Tree (Text)")
-        tree_text = get_tree_text(1, st.session_state.members)
-        st.code("\n".join(tree_text), language="text")
+            st.warning("Tidak bisa render graphviz")
+        st.subheader("Text Tree")
+        st.code("\n".join(get_tree_text(1, st.session_state.members)), language="text")
 
-    with tab5:
-        st.header("📈 Simulasi Massal dengan Parameter Asumsi")
+    with tab_massal:
+        st.header("📈 Simulasi Massal - Analisis Profit Perusahaan")
         st.markdown("""
-        Simulasi ini membangun jaringan **Auto Cuan** (binary tree round-robin) dan **Auto Rich** (sponsor acak) dengan jumlah member tertentu.
-        Kemudian menghitung total komisi yang terbayar dan profit perusahaan.
+        Gunakan simulator ini untuk mengetahui apakah skema komisi menguntungkan perusahaan 
+        dalam skala besar. Masukkan asumsi jumlah member, persentase partisipasi belanja, 
+        rata-rata nominal belanja, dan margin produk. Sistem akan membangun pohon binary 
+        dengan N member (algoritma spillover round-robin) dan menghitung total bonus yang 
+        keluar, serta profit perusahaan.
         """)
-        col1, col2 = st.columns(2)
-        with col1:
-            N = st.number_input("Jumlah total member (termasuk Perusahaan)", min_value=2, max_value=5000, value=500, step=50)
-            active_percent = st.slider("Persentase member aktif (belanja)", 0, 100, 90)
-            avg_spend_cuan = st.number_input("Rata-rata belanja Auto Cuan (Rp)", min_value=0, value=100000, step=50000)
-            avg_spend_rich = st.number_input("Rata-rata belanja Auto Rich (Rp)", min_value=0, value=50000, step=10000)
-        with col2:
-            margin = st.number_input("Margin produk perusahaan (%)", min_value=0, max_value=100, value=5, step=1)
-            st.write("**Parameter komisi (diambil dari sidebar):**")
-            st.write(f"Auto Cuan %: {', '.join([f'{int(p*100)}' for p in st.session_state.cuan_percent[1:9]])}")
-            st.write(f"Auto Rich %: {', '.join([f'{int(p*100)}' for p in st.session_state.rich_percent[1:11]])}")
-            st.write(f"Bonus Sponsor: {int(st.session_state.sponsor_bonus_percent*100)}% berantai")
-        if st.button("🚀 Jalankan Simulasi", type="primary"):
-            with st.spinner("Membangun jaringan dan menghitung komisi (N besar mungkin butuh waktu)..."):
-                result = run_mass_simulation(
-                    N=N,
+        with st.form("massal_form"):
+            col1, col2 = st.columns(2)
+            with col1:
+                n_members = st.number_input("Jumlah total member (termasuk root)", min_value=10, max_value=10000, value=500, step=50)
+                active_percent = st.slider("Persentase partisipasi belanja Auto Cuan (%)", 0, 100, 90)
+                avg_spend = st.number_input("Rata-rata nominal belanja (Rp)", min_value=100000, value=100000, step=50000)
+            with col2:
+                margin = st.number_input("Margin produk perusahaan (%)", min_value=0, max_value=100, value=5, step=1)
+                random_seed = st.number_input("Random seed (untuk reproduksi)", value=42, step=1)
+            submitted = st.form_submit_button("🚀 Jalankan Simulasi", use_container_width=True)
+
+        if submitted:
+            with st.spinner(f"Sedang membangun pohon dengan {n_members} member dan melakukan simulasi..."):
+                # Ambil parameter komisi dari session state (yang sudah diatur di sidebar)
+                cuan_percent = st.session_state.cuan_percent.copy()
+                sponsor_bonus_percent = st.session_state.sponsor_bonus_percent
+                max_level = st.session_state.cuan_max_level
+                # Jalankan simulasi
+                hasil = run_mass_simulation(
+                    n_members=n_members,
                     active_percent=active_percent,
-                    avg_spend_cuan=avg_spend_cuan,
-                    avg_spend_rich=avg_spend_rich,
-                    margin_percent=margin,
-                    cuan_percent=st.session_state.cuan_percent,
-                    rich_percent=st.session_state.rich_percent,
-                    cuan_max_level=8,
-                    rich_max_level=10,
-                    sponsor_bonus_percent=st.session_state.sponsor_bonus_percent
+                    avg_spend=avg_spend,
+                    margin=margin,
+                    cuan_percent=cuan_percent,
+                    sponsor_bonus_percent=sponsor_bonus_percent,
+                    max_level=max_level,
+                    random_seed=random_seed
                 )
-            st.success("Simulasi selesai!")
-            st.subheader("Hasil Simulasi")
-            colA, colB, colC = st.columns(3)
-            colA.metric("Total Member", result['N'])
-            colA.metric("Member Aktif", f"{result['active_count']} ({result['active_percent']}%)")
-            colB.metric("Cash In Auto Cuan", f"Rp{result['cash_in_cuan']:,.0f}")
-            colB.metric("Cash In Auto Rich", f"Rp{result['cash_in_rich']:,.0f}")
-            colB.metric("Total Cash In", f"Rp{result['total_cash_in']:,.0f}")
-            colC.metric("Komisi Matrix Cuan", f"Rp{result['matrix_commission']:,.0f}")
-            colC.metric("Bonus Sponsor", f"Rp{result['sponsor_bonus']:,.0f}")
-            colC.metric("Komisi Auto Rich", f"Rp{result['rich_commission']:,.0f}")
+            # Tampilkan hasil
+            st.success(f"Simulasi selesai dalam {hasil['elapsed_time']:.2f} detik")
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Total Member", hasil['n_members'])
+            col2.metric("Member Aktif Belanja", hasil['n_active'])
+            col3.metric("Total Cash In", f"Rp{hasil['total_cash_in']:,.0f}")
 
-            st.metric("Total Bonus Keluar", f"Rp{result['total_bonus']:,.0f}")
-            st.metric("Laba dari Produk (margin)", f"Rp{result['laba_produk']:,.0f}")
-            st.metric("Profit Bersih Perusahaan", f"Rp{result['profit']:,.0f}")
-            if result['profit'] > 0:
-                st.success(f"✅ Skema AMAN (profit positif: Rp{result['profit']:,.0f})")
-            elif result['profit'] < 0:
-                st.error(f"⚠️ Skema RUGI (profit negatif: Rp{result['profit']:,.0f}) – butuh evaluasi")
-            else:
-                st.info("⚖️ Skema IMPAS")
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Total Komisi Matrix", f"Rp{hasil['total_matrix_bonus']:,.0f}")
+            col2.metric("Total Bonus Sponsor", f"Rp{hasil['total_sponsor_bonus']:,.0f}")
+            col3.metric("Total Bonus Keseluruhan", f"Rp{hasil['total_bonus']:,.0f}")
 
-            # Estimasi breakage
-            total_cash_cuan = result['cash_in_cuan']
-            max_cuan_pct = sum(st.session_state.cuan_percent[1:9])
-            max_cuan_bonus = total_cash_cuan * max_cuan_pct
-            max_rich_bonus = result['cash_in_rich'] * sum(st.session_state.rich_percent[1:11])
-            max_sponsor_bonus = result['matrix_commission'] * st.session_state.sponsor_bonus_percent
-            total_potential = max_cuan_bonus + max_rich_bonus + max_sponsor_bonus
-            breakage = total_potential - result['total_bonus']
-            st.metric("Estimasi Breakage (bonus tidak tersalur)", f"Rp{max(0, breakage):,.0f}")
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Laba dari Produk", f"Rp{hasil['laba_produk']:,.0f}")
+            col2.metric("Profit Perusahaan", f"Rp{hasil['profit']:,.0f}", delta=f"{hasil['profit']/hasil['total_cash_in']*100:.1f}% dari cash in")
+            col3.metric("Status", hasil['status'], delta="✅" if hasil['status']=='AMAN' else "⚠️" if hasil['status']=='RUGI' else "⚖️")
+
+            st.subheader("Analisis Breakage")
+            st.metric("Breakage Matrix (bonus tidak tersalurkan)", f"Rp{hasil['breakage_matrix']:,.0f}")
+            st.caption("Breakage matrix adalah selisih antara komisi maksimal teoritis (jika semua level aktif dan penuh) dengan komisi matrix yang benar-benar terbayar.")
+
+            # Tampilkan detail distribusi jika diperlukan (opsional)
+            with st.expander("Lihat detail parameter simulasi"):
+                st.json({
+                    "Jumlah member": hasil['n_members'],
+                    "Partisipasi": f"{active_percent}%",
+                    "Rata-rata belanja": avg_spend,
+                    "Margin produk": f"{margin}%",
+                    "Random seed": random_seed,
+                    "Persentase komisi per level": cuan_percent[1:max_level+1],
+                    "Bonus sponsor": f"{sponsor_bonus_percent*100}%"
+                })
 
 if __name__ == "__main__":
     main()
